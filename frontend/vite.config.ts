@@ -5,9 +5,7 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   preview: {
-    allowedHosts: [
-      'lemmatizator-production.up.railway.app',
-    ],
+    allowedHosts: true,
     host: true,
     port: 5173,
   },
