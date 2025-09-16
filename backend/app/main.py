@@ -13,13 +13,10 @@ app = FastAPI(title="Lemma Analyzer API")
 # CORS for local dev (Vite default ports)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
-    allow_credentials=True,
+    # In production we allow any origin so that a separately hosted frontend can call the API.
+    # If you want to restrict, pass exact domains via env and replace ["*"] accordingly.
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
