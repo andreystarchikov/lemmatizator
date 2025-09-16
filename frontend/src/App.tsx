@@ -34,7 +34,9 @@ function App() {
     setError(null)
     setData(null)
     try {
-      const res = await fetch('/api/analyze', {
+      const apiBase = (import.meta as any).env?.VITE_API_BASE?.trim() || ''
+      const url = `${apiBase}/api/analyze`
+      const res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
