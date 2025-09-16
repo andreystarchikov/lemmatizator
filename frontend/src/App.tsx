@@ -101,7 +101,7 @@ function App() {
       <section className="panel">
         <textarea
           className="textarea"
-          placeholder="Вставьте текст на русском или английском..."
+          placeholder="Вставьте текст на русском..."
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={12}

@@ -61,21 +61,8 @@ _loaded_models: Dict[str, "spacy.language.Language"] = {}
 
 
 def _detect_language(text: str) -> str:
-    # Lightweight heuristic: try langdetect if available, else fallback
-    try:
-        from langdetect import detect  # type: ignore
-
-        lang = detect(text)
-        if lang.startswith("ru"):
-            return "ru"
-        if lang.startswith("en"):
-            return "en"
-        return "en"  # default to English
-    except Exception:
-        # Fallback: Cyrillic implies Russian
-        if any("\u0400" <= ch <= "\u04FF" for ch in text):
-            return "ru"
-        return "en"
+    # Force Russian only
+    return "ru"
 
 
 def _ensure_spacy_model(lang: str):
@@ -83,13 +70,11 @@ def _ensure_spacy_model(lang: str):
     from spacy.util import is_package
     from spacy.cli import download as spacy_download
 
-    if lang in _loaded_models:
-        return _loaded_models[lang]
+    cache_key = "ru"
+    if cache_key in _loaded_models:
+        return _loaded_models[cache_key]
 
-    model_name = {
-        "en": "en_core_web_sm",
-        "ru": "ru_core_news_sm",
-    }.get(lang, "en_core_web_sm")
+    model_name = "ru_core_news_sm"
 
     if not is_package(model_name):
         # Try to download the model on the fly
@@ -97,17 +82,17 @@ def _ensure_spacy_model(lang: str):
             spacy_download(model_name)
         except Exception as e:
             # As a last resort, try a blank pipeline (limited lemmatization)
-            nlp = spacy.blank(lang if lang in ("en", "ru") else "en")
-            _loaded_models[lang] = nlp
+            nlp = spacy.blank("ru")
+            _loaded_models[cache_key] = nlp
             return nlp
 
     try:
         nlp = spacy.load(model_name)
     except Exception:
         # Fallback to blank if load failed
-        nlp = spacy.blank(lang if lang in ("en", "ru") else "en")
+        nlp = spacy.blank("ru")
 
-    _loaded_models[lang] = nlp
+    _loaded_models[cache_key] = nlp
     return nlp
 
 
@@ -122,7 +107,7 @@ def analyze(req: AnalyzeRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty")
 
-    lang = _detect_language(text)
+    lang = "ru"
     nlp = _ensure_spacy_model(lang)
 
     doc = nlp(text)
@@ -176,7 +161,7 @@ def analyze(req: AnalyzeRequest):
     ]
 
     return AnalyzeResponse(
-        language=lang if lang in ("en", "ru") else "unknown",
+        language="ru",
         total_tokens=len(lemmas),
         unique_lemmas=len(counts),
         items=items,
