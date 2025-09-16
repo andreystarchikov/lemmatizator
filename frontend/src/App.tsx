@@ -34,16 +34,27 @@ function App() {
     setError(null)
     setData(null)
     try {
-      const apiBase = (import.meta as any).env?.VITE_API_BASE?.trim() || ''
-      const url = `${apiBase}/api/analyze`
-      const res = await fetch(url, {
+      const rawBase: string = ((import.meta as any).env?.VITE_API_BASE ?? '') as string
+      const apiBase = rawBase.trim().replace(/\/+$/, '')
+
+      const primaryUrl = apiBase ? `${apiBase}/api/analyze` : '/api/analyze'
+      let res = await fetch(primaryUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ text }),
       })
+      if (!res.ok && apiBase) {
+        // Fallback: try same-origin in case build arg was misconfigured
+        const fallbackUrl = '/api/analyze'
+        res = await fetch(fallbackUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text }),
+        })
+      }
       if (!res.ok) {
         const payload = await res.json().catch(() => ({}))
-        throw new Error(payload.detail || 'Request failed')
+        throw new Error((payload as any).detail || 'Request failed')
       }
       const json = (await res.json()) as AnalyzeResponse
       setData(json)
