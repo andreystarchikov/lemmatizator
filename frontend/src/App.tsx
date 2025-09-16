@@ -230,7 +230,7 @@ function App() {
         </section>
       )}
 
-      <footer className="footer">Создал <a href="https://t.me/seostarchikov" target="_blank" rel="noopener noreferrer">Андрей Старчиков</a></footer>
+      <footer className="footer">© 2025</footer>
     </div>
   )
 }
