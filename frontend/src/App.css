@@ -128,7 +128,7 @@
   border-radius: 5px;
 }
 
-.tab + .tab { }
+.tab + .tab { margin-left: 0; }
 
 .tab.active {
   background: var(--surface-muted);
@@ -204,6 +204,7 @@
 .table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .table th,
@@ -218,8 +219,30 @@
   background: var(--surface-muted);
 }
 
+.th-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+
+.th-sortable .sort-ind {
+  opacity: 0.8;
+  margin-left: 6px;
+}
+
 .table .num {
-  text-align: right;
+  text-align: left;
+}
+
+/* Fix column widths: 70% for text, 30% for frequency */
+.table th:nth-child(1),
+.table td:nth-child(1) {
+  width: 80%;
+}
+
+.table th:nth-child(2),
+.table td:nth-child(2) {
+  width: 20%;
+  text-align: left;
 }
 
 .footer {

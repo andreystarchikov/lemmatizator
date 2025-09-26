@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from collections import Counter
+import re
+from functools import lru_cache
 from typing import Dict, List, Literal
 
 from fastapi import FastAPI, HTTPException
@@ -36,6 +38,7 @@ class AnalyzeResponse(BaseModel):
     total_tokens: int
     unique_lemmas: int
     items: List[LemmaCount]
+    items_filtered: List[LemmaCount]
     total_bigrams: int
     unique_bigrams: int
     bigrams: List["BigramCount"]
@@ -54,7 +57,34 @@ class TrigramCount(BaseModel):
     count: int
 
 
-_loaded_models: Dict[str, "spacy.language.Language"] = {}
+# Resolve forward refs for Pydantic v2
+AnalyzeResponse.model_rebuild()
+
+_pymorphy_analyzer = None  # lazy-initialized pymorphy3 analyzer
+
+# Precompiled regex for alpha-only tokens (Latin/Russian)
+_ALPHA_RE = re.compile(r"[A-Za-zА-Яа-яЁё]+")
+
+
+
+@lru_cache(maxsize=20000)
+def _analyze_token_cached(token: str) -> tuple[str | None, str | None]:
+    """Return (lemma, POS) using a bounded LRU cache to reduce CPU.
+
+    The function depends on the global `_pymorphy_analyzer` which is lazily
+    initialized in the request handler. We intentionally cache only
+    small immutable strings to keep memory usage bounded and safe across
+    requests.
+    """
+    analyzer = _pymorphy_analyzer
+    if analyzer is None:
+        return None, None
+    parsed = analyzer.parse(token)
+    if not parsed:
+        return None, None
+    p = parsed[0]
+    pos = getattr(p.tag, "POS", None)
+    return p.normal_form, pos
 
 
 def _detect_language(text: str) -> str:
@@ -62,35 +92,7 @@ def _detect_language(text: str) -> str:
     return "ru"
 
 
-def _ensure_spacy_model(lang: str):
-    import spacy
-    from spacy.util import is_package
-    from spacy.cli import download as spacy_download
-
-    cache_key = "ru"
-    if cache_key in _loaded_models:
-        return _loaded_models[cache_key]
-
-    model_name = "ru_core_news_sm"
-
-    if not is_package(model_name):
-        # Try to download the model on the fly
-        try:
-            spacy_download(model_name)
-        except Exception as e:
-            # As a last resort, try a blank pipeline (limited lemmatization)
-            nlp = spacy.blank("ru")
-            _loaded_models[cache_key] = nlp
-            return nlp
-
-    try:
-        nlp = spacy.load(model_name)
-    except Exception:
-        # Fallback to blank if load failed
-        nlp = spacy.blank("ru")
-
-    _loaded_models[cache_key] = nlp
-    return nlp
+# spaCy path removed; only razdel+pymorphy3 is used
 
 
 @app.get("/api/health")
@@ -104,54 +106,77 @@ def analyze(req: AnalyzeRequest):
     if not text:
         raise HTTPException(status_code=400, detail="Text is empty")
 
-    lang = "ru"
-    nlp = _ensure_spacy_model(lang)
+    # Single engine: razdel tokenizer + pymorphy3 lemmatizer with POS filtering
+    try:
+        from razdel import tokenize as razdel_tokenize
+        from pymorphy3 import MorphAnalyzer
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"pymorphy engine unavailable: {e}")
 
-    doc = nlp(text)
+    global _pymorphy_analyzer
+    if _pymorphy_analyzer is None:
+        _pymorphy_analyzer = MorphAnalyzer()
+    analyzer = _pymorphy_analyzer
 
-    # Use alpha tokens only; keep lemmatized lowercase
+    # Build alpha tokens directly without an intermediate full token list
+    alpha_tokens = []
+    for tok in razdel_tokenize(text):
+        t = tok.text.lower()
+        if _ALPHA_RE.fullmatch(t):
+            alpha_tokens.append(t)
+    stop_pos = {"PREP", "CONJ", "PRCL", "INTJ"}
+
+    # Single pass over tokens using cached morphological analysis
+    lemmas_raw: List[str] = []
     lemmas: List[str] = []
-    for token in doc:
-        if token.is_alpha:
-            lemma = token.lemma_.lower() if token.lemma_ else token.text.lower()
-            lemmas.append(lemma)
+    for t in alpha_tokens:
+        lemma, pos = _analyze_token_cached(t)
+        if lemma is None:
+            continue
+        # Raw lemmas (no POS filtering)
+        lemmas_raw.append(lemma)
+        # POS-filtered lemmas
+        if pos and pos in stop_pos:
+            continue
+        lemmas.append(lemma)
 
-    counts = Counter(lemmas)
+    counts_raw = Counter(lemmas_raw)
     items = [
         LemmaCount(lemma=lemma, count=count)
-        for lemma, count in counts.most_common()
+        for lemma, count in counts_raw.most_common()
     ]
 
-    # Build bigrams over lemmas with stop-words removed
-    # Use spaCy language stop words when available
-    try:
-        stop_words = {w.lower() for w in getattr(nlp.Defaults, "stop_words", set())}
-    except Exception:
-        stop_words = set()
+    counts_filtered = Counter(lemmas)
+    items_filtered = [
+        LemmaCount(lemma=lemma, count=count)
+        for lemma, count in counts_filtered.most_common()
+    ]
 
-    lemmas_wo_stop = [l for l in lemmas if l not in stop_words]
-
-    bigram_strings: List[str] = []
-    for i in range(len(lemmas_wo_stop) - 1):
-        left = lemmas_wo_stop[i]
-        right = lemmas_wo_stop[i + 1]
-        if left and right:
-            bigram_strings.append(f"{left} {right}")
-    bigram_counts = Counter(bigram_strings)
+    # Build bigram counts over lemmas (stop words already filtered by POS)
+    lemmas_wo_stop = lemmas
+    bigram_counts: Counter[str] = Counter()
+    if len(lemmas_wo_stop) >= 2:
+        for i in range(len(lemmas_wo_stop) - 1):
+            left = lemmas_wo_stop[i]
+            right = lemmas_wo_stop[i + 1]
+            if left and right:
+                bg = f"{left} {right}"
+                bigram_counts[bg] += 1
     bigrams = [
         BigramCount(bigram=bg, count=cnt)
         for bg, cnt in bigram_counts.most_common() if cnt > 1
     ]
 
     # Trigram counts over adjacent lemmas (without stop-words)
-    trigram_strings: List[str] = []
-    for i in range(len(lemmas_wo_stop) - 2):
-        a = lemmas_wo_stop[i]
-        b = lemmas_wo_stop[i + 1]
-        c = lemmas_wo_stop[i + 2]
-        if a and b and c:
-            trigram_strings.append(f"{a} {b} {c}")
-    trigram_counts = Counter(trigram_strings)
+    trigram_counts: Counter[str] = Counter()
+    if len(lemmas_wo_stop) >= 3:
+        for i in range(len(lemmas_wo_stop) - 2):
+            a = lemmas_wo_stop[i]
+            b = lemmas_wo_stop[i + 1]
+            c = lemmas_wo_stop[i + 2]
+            if a and b and c:
+                tg = f"{a} {b} {c}"
+                trigram_counts[tg] += 1
     trigrams = [
         TrigramCount(trigram=tg, count=cnt)
         for tg, cnt in trigram_counts.most_common() if cnt > 1
@@ -159,17 +184,20 @@ def analyze(req: AnalyzeRequest):
 
     return AnalyzeResponse(
         language="ru",
-        total_tokens=len(lemmas),
-        unique_lemmas=len(counts),
+        total_tokens=len(lemmas_raw),
+        unique_lemmas=len(counts_raw),
         items=items,
-        total_bigrams=len(bigram_strings),
+        items_filtered=items_filtered,
+        total_bigrams=max(len(lemmas_wo_stop) - 1, 0),
         unique_bigrams=len(bigram_counts),
         bigrams=bigrams,
-        total_trigrams=len(trigram_strings),
+        total_trigrams=max(len(lemmas_wo_stop) - 2, 0),
         unique_trigrams=len(trigram_counts),
         trigrams=trigrams,
     )
 
 
 # To run: uvicorn app.main:app --reload --port 8000
+
+
 

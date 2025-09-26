@@ -10,6 +10,7 @@ type AnalyzeResponse = {
   total_tokens: number
   unique_lemmas: number
   items: LemmaCount[]
+  items_filtered: LemmaCount[]
   total_bigrams: number
   unique_bigrams: number
   bigrams: BigramCount[]
@@ -25,6 +26,7 @@ function App() {
   const [data, setData] = useState<AnalyzeResponse | null>(null)
   const [activeTab, setActiveTab] = useState<'noStop' | 'withStop' | 'bigrams' | 'trigrams'>('noStop')
   const [copied, setCopied] = useState(false)
+  const [countSortDesc, setCountSortDesc] = useState(true)
 
   const canAnalyze = useMemo(() => text.trim().length > 0 && !loading, [text, loading])
 
@@ -75,13 +77,35 @@ function App() {
 
   const itemsNoStop = useMemo(() => {
     if (!data) return [] as LemmaCount[]
+    // Prefer backend-filtered if provided
+    if (data.items_filtered && data.items_filtered.length > 0) return data.items_filtered
     if (stopSet.size === 0) return data.items
     return data.items.filter((it) => !stopSet.has(it.lemma))
   }, [data, stopSet])
 
   const itemsWithStop = data?.items ?? []
 
-  const itemsToShow = activeTab === 'noStop' ? itemsNoStop : itemsWithStop
+  // kept for clarity previously; replaced by derived sorted rows
+
+  const unigramRows = useMemo(() => {
+    const source = activeTab === 'noStop' ? itemsNoStop : itemsWithStop
+    const sorted = [...source].sort((a, b) => (countSortDesc ? b.count - a.count : a.count - b.count))
+    return sorted
+  }, [activeTab, itemsNoStop, itemsWithStop, countSortDesc])
+
+  const bigramRows = useMemo(() => {
+    if (!data) return [] as BigramCount[]
+    return [...data.bigrams].sort((a, b) => (countSortDesc ? b.count - a.count : a.count - b.count))
+  }, [data?.bigrams, countSortDesc])
+
+  const trigramRows = useMemo(() => {
+    if (!data) return [] as TrigramCount[]
+    return [...data.trigrams].sort((a, b) => (countSortDesc ? b.count - a.count : a.count - b.count))
+  }, [data?.trigrams, countSortDesc])
+
+  function toggleCountSort() {
+    setCountSortDesc((v) => !v)
+  }
 
   async function copyActive() {
     if (!data) return
@@ -104,17 +128,66 @@ function App() {
     }
   }
 
+  function downloadActiveCsv() {
+    if (!data) return
+
+    let header: string[] = []
+    let rows: string[][] = []
+    let filename = 'data.csv'
+
+    if (activeTab === 'noStop') {
+      header = ['Лемма', 'Частота']
+      rows = unigramRows.map((it) => [it.lemma, String(it.count)])
+      filename = 'unigrams-no-stop.csv'
+    } else if (activeTab === 'withStop') {
+      header = ['Лемма', 'Частота']
+      rows = unigramRows.map((it) => [it.lemma, String(it.count)])
+      filename = 'unigrams-with-stop.csv'
+    } else if (activeTab === 'bigrams') {
+      header = ['Биграмма', 'Частота']
+      rows = bigramRows.map((b) => [b.bigram, String(b.count)])
+      filename = 'bigrams.csv'
+    } else {
+      header = ['Триграмма', 'Частота']
+      rows = trigramRows.map((t) => [t.trigram, String(t.count)])
+      filename = 'trigrams.csv'
+    }
+
+    const csvEscape = (value: string) => {
+      if (value == null) return ''
+      const needsQuote = /[",\n\r]/.test(value)
+      const out = value.replace(/"/g, '""')
+      return needsQuote ? `"${out}"` : out
+    }
+
+    const lines = [
+      header.map(csvEscape).join(','),
+      ...rows.map((r) => r.map(csvEscape).join(',')),
+    ]
+
+    const csvBody = '\uFEFF' + lines.join('\n')
+    const blob = new Blob([csvBody], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
   return (
     <div className="container">
       <header className="header">
         <h1 className="title">Лемматизатор</h1>
-        <p className="subtitle">Вставьте текст и получите частотный словарь лемм</p>
+        <p className="subtitle">Помогает разбить текст на n-граммы</p>
       </header>
 
       <section className="panel">
         <textarea
           className="textarea"
-          placeholder="Вставьте текст на русском..."
+          placeholder="Вставьте текст..."
           value={text}
           onChange={(e) => setText(e.target.value)}
           rows={12}
@@ -135,7 +208,6 @@ function App() {
           <div className="meta">
             <span>Всего символов: {text.length}</span>
             <span>Уникальных лемм: {itemsNoStop.length}</span>
-            
           </div>
           <div className="tabs-row">
             <div className="tabs">
@@ -166,6 +238,7 @@ function App() {
             </div>
             <div className="copy-group">
               <button className="btn small" onClick={copyActive}>Копировать</button>
+              <button className="btn small" onClick={downloadActiveCsv}>Скачать .csv</button>
               {copied && <span className="copied">Скопировано</span>}
             </div>
           </div>
@@ -175,11 +248,13 @@ function App() {
                 <thead>
                   <tr>
                     <th>Лемма</th>
-                    <th>Частота</th>
+                    <th className="th-sortable" onClick={toggleCountSort}>
+                      Частота <span className="sort-ind">{countSortDesc ? '↓' : '↑'}</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {itemsToShow.map((it) => (
+                  {unigramRows.map((it) => (
                     <tr key={it.lemma}>
                       <td>{it.lemma}</td>
                       <td className="num">{it.count}</td>
@@ -194,14 +269,16 @@ function App() {
                 <thead>
                   <tr>
                     <th>Биграмма</th>
-                    <th>Частота</th>
+                    <th className="th-sortable" onClick={toggleCountSort}>
+                      Частота <span className="sort-ind">{countSortDesc ? '↓' : '↑'}</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.bigrams.map((bg) => (
-                    <tr key={bg.bigram}>
-                      <td>{bg.bigram}</td>
-                      <td className="num">{bg.count}</td>
+                  {bigramRows.map((row) => (
+                    <tr key={row.bigram}>
+                      <td>{row.bigram}</td>
+                      <td className="num">{row.count}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -213,14 +290,16 @@ function App() {
                 <thead>
                   <tr>
                     <th>Триграмма</th>
-                    <th>Частота</th>
+                    <th className="th-sortable" onClick={toggleCountSort}>
+                      Частота <span className="sort-ind">{countSortDesc ? '↓' : '↑'}</span>
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
-                  {data.trigrams.map((tg) => (
-                    <tr key={tg.trigram}>
-                      <td>{tg.trigram}</td>
-                      <td className="num">{tg.count}</td>
+                  {trigramRows.map((row) => (
+                    <tr key={row.trigram}>
+                      <td>{row.trigram}</td>
+                      <td className="num">{row.count}</td>
                     </tr>
                   ))}
                 </tbody>
