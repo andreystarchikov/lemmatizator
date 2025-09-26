@@ -1,0 +1,4 @@
+#!/bin/sh
+# shim for platforms that try to run `npm start` inside the runtime image
+# we just delegate to our nginx entrypoint
+exec /entrypoint.sh "$@"

@@ -21,6 +21,10 @@ ENV PORT=8080
 # Install envsubst for runtime PORT templating
 RUN apk add --no-cache gettext
 
+# Provide a lightweight shim for environments that force `npm start`
+COPY npm /usr/local/bin/npm
+RUN chmod +x /usr/local/bin/npm
+
 # Copy nginx template and entrypoint
 COPY nginx/default.conf.template /etc/nginx/conf.d/default.conf.template
 COPY entrypoint.sh /entrypoint.sh
